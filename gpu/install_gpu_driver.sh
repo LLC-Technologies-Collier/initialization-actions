@@ -1,5 +1,6 @@
 #!/bin/bash
 #
+
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -11,6 +12,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+#
+# This initialization action is generated from
+# initialization-actions/templates/gpu/install_gpu_driverasdfaf.sh.in
+#
+# Modifications made directly to the generated file will be lost when
+# the template is re-evaluated
 
 #
 # This script installs NVIDIA GPU drivers and collects GPU utilization metrics.
@@ -1012,6 +1020,7 @@ function add_repo_nvidia_container_toolkit() {
         curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
           | perl -pe "s#deb https://#deb [signed-by=${kr_path}] https://#g" \
           | tee "${sources_list_path}"
+      apt-get update
   else
     curl -s -L https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo | \
       tee /etc/yum.repos.d/nvidia-container-toolkit.repo
@@ -1275,12 +1284,21 @@ function install_cuda(){
 }
 
 function install_nvidia_container_toolkit() {
+  local container_runtime_default
+    if command -v docker     ; then container_runtime_default='docker'
+  elif command -v containerd ; then container_runtime_default='containerd'
+  elif command -v crio       ; then container_runtime_default='crio'
+                               else container_runtime_default='' ; fi
+  CONTAINER_RUNTIME=$(get_metadata_attribute 'container-runtime' "${container_runtime_default}")
+
+  if test -z "${CONTAINER_RUNTIME}" ; then return ; fi
+
   add_repo_nvidia_container_toolkit
   if is_debuntu ; then
-    execute_with_retries apt-get install -y -qq nvidia-container-toolkit
-  else
-    execute_with_retries dnf -y -q install nvidia-container-toolkit
-  fi
+    execute_with_retries apt-get install -y -q nvidia-container-toolkit ; else
+    execute_with_retries dnf     install -y -q nvidia-container-toolkit ; fi
+  nvidia-ctk runtime configure --runtime="${CONTAINER_RUNTIME}"
+  systemctl restart "${CONTAINER_RUNTIME}"
 }
 
 # Install NVIDIA GPU driver provided by NVIDIA
