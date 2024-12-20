@@ -121,18 +121,6 @@ function get_metadata_attribute() (
 OS_NAME="$(lsb_release -is | tr '[:upper:]' '[:lower:]')"
 readonly OS_NAME
 
-# Fetch SPARK config
-SPARK_VERSION_ENV="$(spark-submit --version 2>&1 | sed -n 's/.*version[[:blank:]]\+\([0-9]\+\.[0-9]\).*/\1/p' | head -n1)"
-readonly SPARK_VERSION_ENV
-if version_ge "${SPARK_VERSION_ENV}" "3.0" && \
-   version_lt "${SPARK_VERSION_ENV}" "4.0" ; then
-  readonly DEFAULT_XGBOOST_VERSION="1.7.6" # try 2.1.1
-  readonly SPARK_VERSION="3.0"             # try ${SPARK_VERSION_ENV}
-else
-  echo "Error: Your Spark version is not supported. Please upgrade Spark to one of the supported versions."
-  exit 1
-fi
-
 # node role
 ROLE="$(get_metadata_attribute dataproc-role)"
 readonly ROLE
@@ -897,6 +885,9 @@ function add_repo_nvidia_container_toolkit() {
         curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
           | perl -pe "s#deb https://#deb [signed-by=${kr_path}] https://#g" \
           | tee "${sources_list_path}"
+  else
+    curl -s -L https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo | \
+      tee /etc/yum.repos.d/nvidia-container-toolkit.repo
   fi
 }
 
@@ -1150,10 +1141,19 @@ function install_cuda(){
   # The OS package distributions are unreliable
   install_cuda_runfile
 
-  # Includes cudNN packages
+  # Includes CUDA packages
   add_repo_cuda
 
   touch "${workdir}/cuda-repo-complete"
+}
+
+function install_nvidia_container_toolkit() {
+  add_repo_nvidia_container_toolkit
+  if is_debuntu ; then
+    execute_with_retries apt-get install -y -qq nvidia-container-toolkit
+  else
+    execute_with_retries dnf -y -q install nvidia-container-toolkit
+  fi
 }
 
 # Install NVIDIA GPU driver provided by NVIDIA
@@ -1161,16 +1161,14 @@ function install_nvidia_gpu_driver() {
   if test -f "${workdir}/gpu-driver-complete" ; then return ; fi
   if ( ge_debian12 && is_src_os ) ; then
     add_nonfree_components
-    add_repo_nvidia_container_toolkit
     apt-get update -qq
     apt-get -yq install \
-          nvidia-container-toolkit \
-          dkms \
-          nvidia-open-kernel-dkms \
-          nvidia-open-kernel-support \
-          nvidia-smi \
-          libglvnd0 \
-          libcuda1
+        dkms \
+        nvidia-open-kernel-dkms \
+        nvidia-open-kernel-support \
+        nvidia-smi \
+        libglvnd0 \
+        libcuda1
     echo "NVIDIA GPU driver provided by ${_shortname} was installed successfully"
     return 0
   fi
@@ -1503,9 +1501,8 @@ function main() {
     # if mig is enabled drivers would have already been installed
     if [[ $IS_MIG_ENABLED -eq 0 ]]; then
       install_nvidia_gpu_driver
-
+      install_nvidia_container_toolkit
       install_cuda
-
       load_kernel_module
 
       if [[ -n ${CUDNN_VERSION} ]]; then
@@ -1771,8 +1768,15 @@ function set_proxy(){
   export https_proxy="${METADATA_HTTP_PROXY}"
   export HTTP_PROXY="${METADATA_HTTP_PROXY}"
   export HTTPS_PROXY="${METADATA_HTTP_PROXY}"
-  export no_proxy=metadata.google.internal,169.254.169.254
-  export NO_PROXY=metadata.google.internal,169.254.169.254
+  no_proxy="localhost,127.0.0.0/8,::1,metadata.google.internal,169.254.169.254"
+  local no_proxy_svc
+  for no_proxy_svc in compute  secretmanager dns    servicedirectory     logging  \
+                      bigquery composer      pubsub bigquerydatatransfer dataflow \
+                      storage  datafusion    ; do
+    no_proxy="${no_proxy},${no_proxy_svc}.googleapis.com"
+  done
+
+  export NO_PROXY="${no_proxy}"
 }
 
 function mount_ramdisk(){
@@ -1807,6 +1811,17 @@ function mount_ramdisk(){
 function prepare_to_install(){
   # Verify OS compatability and Secure boot state
   check_os_and_secure_boot
+
+  # Verify SPARK compatability
+  SPARK_VERSION="$(spark-submit --version 2>&1 | sed -n 's/.*version[[:blank:]]\+\([0-9]\+\.[0-9]\).*/\1/p' | head -n1)"
+  readonly SPARK_VERSION
+  if version_lt "${SPARK_VERSION}" "3.1" || \
+     version_ge "${SPARK_VERSION}" "4.0" ; then
+    echo "Error: Your Spark version is not supported. Please upgrade Spark to one of the supported versions."
+    exit 1
+  fi
+
+  readonly DEFAULT_XGBOOST_VERSION="1.7.6" # try 2.1.1
 
   workdir=/opt/install-dpgce
   nvsmi_works="0"
