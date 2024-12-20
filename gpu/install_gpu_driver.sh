@@ -1897,9 +1897,9 @@ function prepare_to_install(){
     if test -v DATAPROC_VERSION ; then
       DATAPROC_IMAGE_VERSION="${DATAPROC_VERSION}"
     else
-      if   version_lt "${SPARK_VERSION_ENV}" "3.2" ; then DATAPROC_IMAGE_VERSION="2.0"
-      elif version_lt "${SPARK_VERSION_ENV}" "3.4" ; then DATAPROC_IMAGE_VERSION="2.1"
-      elif version_lt "${SPARK_VERSION_ENV}" "3.6" ; then DATAPROC_IMAGE_VERSION="2.2"
+      if   version_lt "${SPARK_VERSION}" "3.2" ; then DATAPROC_IMAGE_VERSION="2.0"
+      elif version_lt "${SPARK_VERSION}" "3.4" ; then DATAPROC_IMAGE_VERSION="2.1"
+      elif version_lt "${SPARK_VERSION}" "3.6" ; then DATAPROC_IMAGE_VERSION="2.2"
       else echo "Unknown dataproc image version" ; exit 1 ; fi
     fi
   fi
