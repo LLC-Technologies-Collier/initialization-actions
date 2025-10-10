@@ -1987,6 +1987,12 @@ function check_secure_boot() {
 function run_hadoop_spark_config() {
   # Ensure necessary variables are available or re-evaluated
   # prepare_gpu_env needs CUDA/Driver versions, call it first if needed
+  # Set GCS bucket for caching
+  if [[ ! -v pkg_bucket ]] ; then
+    temp_bucket="$(get_metadata_attribute dataproc-temp-bucket)"
+    readonly temp_bucket
+    readonly pkg_bucket="gs://${temp_bucket}/dpgce-packages"
+  fi
   if [[ ! -v CUDA_VERSION || ! -v DRIVER_VERSION ]]; then prepare_gpu_env; fi
   # Re-read ROLE
   ROLE="$(get_metadata_attribute dataproc-role)";
@@ -2041,13 +2047,6 @@ function run_hadoop_spark_config() {
     :
   fi
 
-  # Restart services after config
-  for svc in resourcemanager nodemanager; do
-    if (systemctl is-active --quiet hadoop-yarn-${svc}.service); then
-      systemctl stop  hadoop-yarn-${svc}.service || echo "WARN: Failed to stop ${svc}"
-      systemctl start hadoop-yarn-${svc}.service || echo "WARN: Failed to start ${svc}"
-    fi
-  done
   return 0 # Explicitly return success
 }
 
@@ -2193,11 +2192,6 @@ if version_lt "\${gcloud_sdk_version}" "402.0.0" ; then
   gsutil_stat_cmd="gsutil stat"
 fi
 curl_retry_args="-fsSL --retry-connrefused --retry 10 --retry-max-time 30"
-# Define pkg_bucket (needed by cache_fetched_package)
-temp_bucket="\$(get_metadata_attribute dataproc-temp-bucket)"
-readonly temp_bucket
-readonly pkg_bucket="gs://\${temp_bucket}/dpgce-packages"
-readonly install_log="/tmp/deferred-config-install.log" # Log file for execute_with_retries
 
 # --- Include the main config function ---
 $(declare -f run_hadoop_spark_config)
@@ -2213,6 +2207,14 @@ else
   # Keep the service enabled to allow for manual inspection/retry
   exit 1
 fi
+
+# Restart services after applying config
+for svc in resourcemanager nodemanager; do
+  if (systemctl is-active --quiet hadoop-yarn-${svc}.service); then
+    systemctl stop  hadoop-yarn-${svc}.service || echo "WARN: Failed to stop ${svc}"
+    systemctl start hadoop-yarn-${svc}.service || echo "WARN: Failed to start ${svc}"
+  fi
+done
 
 exit 0
 EOF
@@ -2848,9 +2850,6 @@ function prepare_to_install(){
   mount_ramdisk # Updates tmpdir if successful
   install_log="${tmpdir}/install.log" # Set install log path based on final tmpdir
 
-  # Prepare GPU environment variables (versions, URLs, counts)
-  prepare_gpu_env
-
   workdir=/opt/install-dpgce
   # Set GCS bucket for caching
   temp_bucket="$(get_metadata_attribute dataproc-temp-bucket)"
@@ -2858,6 +2857,9 @@ function prepare_to_install(){
   readonly pkg_bucket="gs://${temp_bucket}/dpgce-packages"
   readonly bdcfg="/usr/local/bin/bdconfig"
   export DEBIAN_FRONTEND=noninteractive
+
+  # Prepare GPU environment variables (versions, URLs, counts)
+  prepare_gpu_env
 
   mkdir -p "${workdir}/complete"
   trap exit_handler EXIT
