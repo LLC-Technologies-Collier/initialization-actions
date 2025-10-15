@@ -28,7 +28,7 @@ spec:
     image: "${IMAGE}"
     resources:
       requests:
-        memory: "4G"
+        memory: "8G"
         cpu: "6000m"
     env:
     - name: COMMIT_SHA

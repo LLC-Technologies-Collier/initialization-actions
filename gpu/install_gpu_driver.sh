@@ -17,19 +17,6 @@
 
 set -xeuo pipefail
 
-NM_WAS_RUNNING=0
-if systemctl is-active --quiet hadoop-yarn-nodemanager.service; then
-  echo "NodeManager is running, disabling and stopping..."
-  NM_WAS_RUNNING=1
-  systemctl disable hadoop-yarn-nodemanager.service
-  systemctl stop hadoop-yarn-nodemanager.service
-  echo "NodeManager disabled and stopped."
-else
-  echo "NodeManager is not running."
-  # Ensure it's disabled even if not running
-  systemctl disable hadoop-yarn-nodemanager.service >/dev/null 2>&1 || true
-fi
-
 function os_id()       { grep '^ID='               /etc/os-release | cut -d= -f2 | xargs ; }
 function os_version()  { grep '^VERSION_ID='       /etc/os-release | cut -d= -f2 | xargs ; }
 function os_codename() { grep '^VERSION_CODENAME=' /etc/os-release | cut -d= -f2 | xargs ; }
@@ -131,6 +118,32 @@ function get_metadata_attribute() {
   get_metadata_value "attributes/${attribute_name}" || echo -n "${default_value}"
   set -e
 }
+
+NM_WAS_RUNNING=0
+IS_CUSTOM_IMAGE_BUILD="false" # Default
+# --- Detect Image Build Context ---
+# Use 'initialization-actions' as the default name for clarity
+INVOCATION_TYPE="$(get_metadata_attribute invocation-type "initialization-actions")"
+if [[ "${INVOCATION_TYPE}" == "custom-images" ]]; then
+  IS_CUSTOM_IMAGE_BUILD="true"
+  # echo "Detected custom image build context (invocation-type=custom-images). Configuration will be deferred." # Keep silent
+else
+  IS_CUSTOM_IMAGE_BUILD="false" # Ensure it's explicitly false otherwise
+  # echo "Running in initialization action mode (invocation-type=${INVOCATION_TYPE})." # Keep silent
+fi
+if [[ "${IS_CUSTOM_IMAGE_BUILD}" == "false" ]]; then
+  if systemctl is-active --quiet hadoop-yarn-nodemanager.service; then
+    echo "NodeManager is running, disabling and stopping..."
+    NM_WAS_RUNNING=1
+    systemctl disable hadoop-yarn-nodemanager.service
+    systemctl stop hadoop-yarn-nodemanager.service
+    echo "NodeManager disabled and stopped."
+  else
+    echo "NodeManager is not running."
+    # Ensure it's disabled even if not running
+    systemctl disable hadoop-yarn-nodemanager.service >/dev/null 2>&1 || true
+  fi
+fi
 
 OS_NAME="$(lsb_release -is | tr '[:upper:]' '[:lower:]')"
 distribution=$(. /etc/os-release;echo $ID$VERSION_ID)
@@ -519,8 +532,6 @@ readonly SPARK_CONF_DIR='/etc/spark/conf'
 NVIDIA_SMI_PATH='/usr/bin'
 MIG_MAJOR_CAPS=0
 IS_MIG_ENABLED=0
-
-IS_CUSTOM_IMAGE_BUILD="false" # Default
 
 function execute_with_retries() (
   local -r cmd="$*"
@@ -2621,7 +2632,9 @@ function main() {
   fi
   # --- End Apply or Defer ---
 
-  yarn_exit_handler # Restart YARN services
+  if [[ "${IS_CUSTOM_IMAGE_BUILD}" == "false" ]]; then
+    yarn_exit_handler # Restart YARN services
+  fi
 }
 
 function cache_fetched_package() {
@@ -2634,50 +2647,6 @@ function cache_fetched_package() {
   else
     time ( curl ${curl_retry_args} "${src_url}" -o "${local_fn}" && \
            execute_with_retries ${gsutil_cmd} cp "${local_fn}" "${gcs_fn}" ; )
-  fi
-}
-
-function fix_nodemanager_init_script() {
-  local lsb_script="/etc/init.d/hadoop-yarn-nodemanager"
-  local service_name="hadoop-yarn-nodemanager"
-  local generated_unit_file="/run/systemd/generator.late/${service_name}.service"
-  local changed=0
-
-  if [[ ! -f "${lsb_script}" ]]; then
-    echo "WARN: LSB script ${lsb_script} not found."
-    return
-  fi
-
-  # 1. Fix the stop command
-  local broken_stop_cmd='start_daemon $EXEC_PATH --config "$CONF_DIR" stop $DAEMON_FLAGS'
-  local fixed_stop_cmd='start_daemon $EXEC_PATH --config "$CONF_DIR" --daemon stop $DAEMON_FLAGS'
-
-  if grep -qF "${broken_stop_cmd}" "${lsb_script}"; then
-    echo "Fixing stop command in ${lsb_script}..."
-    local sed_broken_stop_cmd=$(printf '%s\\n' "${broken_stop_cmd}" | sed 's/[][\\/.^$*]/\\\\&/g')
-    local sed_fixed_stop_cmd=$(printf '%s\\n' "${fixed_cmd}" | sed 's/[][\\/.^$*]/\\\\&/g')
-    sed -i "s|${sed_broken_stop_cmd}|${sed_fixed_stop_cmd}|" "${lsb_script}"
-    changed=1
-  fi
-
-  # 2. Prepend source commands to the 'su -c' line in the start function
-  local start_line_marker='--daemon start $DAEMON_FLAGS'
-  if grep -qF "${start_line_marker}" "${lsb_script}" && ! grep -qF "source /etc/environment && source /etc/default/hadoop-yarn-nodemanager" "${lsb_script}"; then
-    echo "Adding source commands to su -c in start() for ${lsb_script}"
-    sed -i '/su -s \/bin\/bash yarn -c "/s|yarn -c "|yarn -c "source /etc/environment && source /etc/default/hadoop-yarn-nodemanager && |' "${lsb_script}"
-    changed=1
-  fi
-
-  if [[ "${changed}" -eq 1 ]]; then
-    if [[ -f "${generated_unit_file}" ]]; then
-      echo "Removing old generated unit file: ${generated_unit_file}"
-      rm -f "${generated_unit_file}"
-    fi
-    echo "Reloading systemd daemon to regenerate units..."
-    systemctl daemon-reload
-    echo "Systemd daemon reloaded."
-  else
-    echo "No changes made to ${lsb_script}."
   fi
 }
 
@@ -3118,17 +3087,6 @@ function prepare_to_install(){
   check_os
   check_secure_boot
   set_proxy
-
-  # --- Detect Image Build Context ---
-  # Use 'initialization-actions' as the default name for clarity
-  INVOCATION_TYPE="$(get_metadata_attribute invocation-type "initialization-actions")"
-  if [[ "${INVOCATION_TYPE}" == "custom-images" ]]; then
-    IS_CUSTOM_IMAGE_BUILD="true"
-    # echo "Detected custom image build context (invocation-type=custom-images). Configuration will be deferred." # Keep silent
-  else
-    IS_CUSTOM_IMAGE_BUILD="false" # Ensure it's explicitly false otherwise
-    # echo "Running in initialization action mode (invocation-type=${INVOCATION_TYPE})." # Keep silent
-  fi
 
   # With the 402.0.0 release of gcloud sdk, `gcloud storage` can be
   # used as a more performant replacement for `gsutil`
