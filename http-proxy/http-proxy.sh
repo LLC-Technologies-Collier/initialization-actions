@@ -144,7 +144,7 @@ function set_proxy(){
   user_no_proxy=$(get_metadata_attribute 'no-proxy' '')
   local user_no_proxy_list=()
   if [[ -n "${user_no_proxy}" ]]; then
-    IFS=',' read -r -a user_no_proxy_list <<< "${user_no_proxy// /,}"
+    IFS=',' read -r -a user_no_proxy_list <<< "${user_no_proxy//[[:space:]]/}"
   fi
 
   local combined_no_proxy_list=( "${default_no_proxy_list[@]}" "${user_no_proxy_list[@]}" )
