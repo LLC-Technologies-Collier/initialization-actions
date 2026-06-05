@@ -112,7 +112,11 @@ class HttpProxyTestCase(DataprocTestCase):
 
     real_test_file = os.path.realpath(__file__)
     real_test_dir = os.path.dirname(real_test_file)
-    env_json_path = os.path.abspath(os.path.join(real_test_dir, "../env.json"))
+    repo_root_dir = os.path.dirname(real_test_dir)
+    env_json_path = os.path.abspath(os.path.join(repo_root_dir, "env.json"))
+
+    if not os.path.exists(env_json_path):
+      self.skipTest(f"env.json not found at {env_json_path}. Skipping enabled proxy test.")
 
     with open(env_json_path, "r") as f:
       env_data = json.load(f)
